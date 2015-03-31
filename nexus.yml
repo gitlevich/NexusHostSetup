@@ -1,0 +1,96 @@
+- hosts: nexus.*
+  vars:
+    nexus_version: 2.11.2-03
+    nexus_download_url: http://www.sonatype.org/downloads/nexus-{{nexus_version}}-bundle.tar.gz
+    nexus_download_dest: /tmp/nexus-{{nexus_version}}-bundle.tar.gz
+    nexus_extracted_dir: /tmp/nexus_extracted_dir
+    nexus_current_version_dir: /usr/local/lib/nexus-{{nexus_version}}
+    nexus_dir: /usr/local/lib/nexus
+
+  tasks:
+
+  - name: Add additional apt repositories
+    sudo: yes
+    apt_repository: repo={{item}} state=present update_cache=true
+    with_items:
+      - ppa:webupd8team/java
+
+  - name: Accept Oracle License
+    sudo: yes
+    debconf: name={{item}} question='shared/accepted-oracle-license-v1-1' value='true' vtype='select'
+    with_items:
+      - oracle-java8-installer
+
+  - name: Install packages
+    sudo: yes
+    apt:  name={{item}} state=latest update_cache=true
+    with_items:
+      - oracle-java8-installer
+
+  - name: create "nexus" group
+    group: name=nexus
+    sudo: true
+
+  - name: create "nexus" user
+    user: name=nexus group=nexus
+    sudo: true
+
+  - name: download nexus
+    get_url: url={{nexus_download_url}} dest={{nexus_download_dest}}
+    register: nexus_download
+
+  - name: create {{nexus_extracted_dir}} directory
+    file: path={{nexus_extracted_dir}} state=directory
+    when: nexus_download.changed
+    sudo: true
+
+  - name: extract nexus to {{nexus_extracted_dir}}
+    command: tar xzf {{nexus_download_dest}} -C {{nexus_extracted_dir}} --strip-components=1
+    when: nexus_download.changed
+    sudo: true
+
+  - name: move nexus to {{nexus_current_version_dir}} directory
+    command: cp -a {{nexus_extracted_dir}}/. {{nexus_current_version_dir}}
+    when: nexus_download.changed
+    sudo: true
+
+  - name: remove {{nexus_extracted_dir}} directory
+    command: rm -rf {{nexus_extracted_dir}}
+    when: nexus_download.changed
+    sudo: true
+
+  - name: make {{nexus_current_version_dir}} directory property of "nexus" user/group
+    file: path={{nexus_current_version_dir}} group=nexus owner=nexus recurse=true
+    sudo: true
+
+  - name: make nexus run by "nexus" user
+    lineinfile: dest={{nexus_current_version_dir}}/bin/nexus regexp="#RUN_AS_USER=" line="RUN_AS_USER=nexus" backrefs=true
+    sudo: true
+
+  - name: Create a symlink for the current nexus version
+    sudo: yes
+    file: src={{nexus_current_version_dir}} path={{nexus_dir}} state=link owner=nexus group=nexus
+
+  - name: set NEXUS_HOME
+    lineinfile: dest={{nexus_dir}}/bin/nexus regexp="^NEXUS_HOME" line="NEXUS_HOME={{nexus_dir}}" backrefs=true
+    sudo: true
+
+  - name: create symbolic links to /etc/init.d/nexus
+    file: src={{nexus_dir}}/bin/nexus dest=/etc/init.d/nexus state=link
+    sudo: true
+
+  - name: Ensure Nexus runs on boot as autostarting Nexus doesn't seem to work with the 'service' module using 'enabled=yes'
+    lineinfile: dest=/etc/rc.local insertbefore='exit 0' line='service nexus start'
+    sudo: true
+
+  - name: Let root create the directory for Nexus' process ID file on every startup with the user "nexus" as its owner. Do this on each start time because /var/run/ is deleted when the system boots
+    lineinfile: dest=/etc/rc.local insertbefore='service nexus start' line='mkdir /var/run/nexus && chown nexus:nexus /var/run/nexus'
+    sudo: true
+
+  - name: set nexus working directory
+    lineinfile: dest={{nexus_dir}}/conf/nexus.properties regexp="^nexus-work=" line="nexus-work=${bundleBasedir}/work/nexus"
+    sudo: true
+
+  - name: start nexus
+    service: name=nexus state=started pattern={{nexus_dir}}
+    sudo: true
